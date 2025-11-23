@@ -16,7 +16,7 @@ import {
   History,
   BarChart2
 } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceDot } from 'recharts';
 
 interface AnalysisViewProps {
   data: MarketAnalysis;
@@ -140,44 +140,88 @@ const PlanCard: React.FC<{ plan: TradingPlan }> = ({ plan }) => {
   );
 };
 
+const getPhaseColor = (phase?: string) => {
+    if (!phase) return '#94a3b8';
+    if (phase.includes('主升') || phase.includes('启动')) return '#ef4444'; // Red (Hot/Up)
+    if (phase.includes('退潮') || phase.includes('冰点')) return '#22c55e'; // Green (Down/Cold)
+    if (phase.includes('震荡') || phase.includes('分歧')) return '#f59e0b'; // Yellow (Warning)
+    return '#3b82f6'; // Blue (Chaos/Default)
+};
+
+const CustomDot = (props: any) => {
+    const { cx, cy, payload } = props;
+    const color = getPhaseColor(payload.phase);
+    
+    return (
+      <g>
+        <circle cx={cx} cy={cy} r={6} stroke={color} strokeWidth={2} fill="#1e293b" />
+        <circle cx={cx} cy={cy} r={3} fill={color} />
+      </g>
+    );
+};
+
+const CustomTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      const data = payload[0].payload;
+      const color = getPhaseColor(data.phase);
+      return (
+        <div className="bg-slate-900 border border-slate-700 p-3 rounded shadow-lg text-xs">
+          <p className="text-slate-400 font-mono mb-1">{data.date}</p>
+          <div className="flex items-center gap-2 mb-1">
+             <span className="text-slate-200 font-bold text-lg">{data.score}</span>
+             <span className="px-1.5 py-0.5 rounded text-slate-950 font-bold" style={{ backgroundColor: color }}>
+                {data.phase || 'N/A'}
+             </span>
+          </div>
+          <p className="text-slate-300 max-w-[150px]">{data.label}</p>
+        </div>
+      );
+    }
+    return null;
+};
+
 const SentimentTrendChart: React.FC<{ data: SentimentPoint[] }> = ({ data }) => {
   if (!data || data.length === 0) return <div className="text-slate-500 text-sm p-4">暂无历史数据</div>;
 
   return (
-    <div className="h-[200px] w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-          <XAxis 
-            dataKey="date" 
-            stroke="#94a3b8" 
-            fontSize={12} 
-            tickLine={false} 
-            axisLine={false}
-          />
-          <YAxis 
-            stroke="#94a3b8" 
-            fontSize={12} 
-            tickLine={false} 
-            axisLine={false}
-            domain={[0, 100]}
-            hide={true}
-          />
-          <Tooltip 
-            contentStyle={{ backgroundColor: '#1e293b', borderColor: '#475569', color: '#f1f5f9' }}
-            itemStyle={{ color: '#f1f5f9' }}
-            labelStyle={{ color: '#94a3b8' }}
-          />
-          <Line 
-            type="monotone" 
-            dataKey="score" 
-            stroke="#ef4444" 
-            strokeWidth={3} 
-            dot={{ r: 4, fill: '#ef4444', strokeWidth: 0 }} 
-            activeDot={{ r: 6, fill: '#fff' }}
-          />
-        </LineChart>
-      </ResponsiveContainer>
+    <div className="flex flex-col h-full">
+        <div className="flex gap-4 mb-2 justify-end text-[10px] text-slate-400">
+            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#ef4444]"></div>启动/主升</div>
+            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#f59e0b]"></div>震荡/分歧</div>
+            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#22c55e]"></div>退潮/冰点</div>
+            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#3b82f6]"></div>混沌/其他</div>
+        </div>
+        <div className="h-[200px] w-full flex-1">
+            <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={data} margin={{ top: 10, right: 10, bottom: 5, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                <XAxis 
+                    dataKey="date" 
+                    stroke="#94a3b8" 
+                    fontSize={12} 
+                    tickLine={false} 
+                    axisLine={false}
+                />
+                <YAxis 
+                    stroke="#94a3b8" 
+                    fontSize={12} 
+                    tickLine={false} 
+                    axisLine={false}
+                    domain={[0, 100]}
+                    hide={true}
+                />
+                <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#475569', strokeDasharray: '4 4' }} />
+                <Line 
+                    type="monotone" 
+                    dataKey="score" 
+                    stroke="#64748b" 
+                    strokeWidth={2} 
+                    dot={<CustomDot />}
+                    activeDot={{ r: 8, strokeWidth: 0 }}
+                />
+                </LineChart>
+            </ResponsiveContainer>
+        </div>
     </div>
   );
 };
@@ -250,7 +294,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ data, onRefresh }) =
         {/* Sentiment Trend */}
         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-sm md:col-span-1">
             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <History size={16} /> 近5日情绪走势 (Sentiment Trend)
+                <History size={16} /> 近5日情绪周期 (Sentiment Cycle)
             </h3>
             <SentimentTrendChart data={data.sentimentTrend} />
         </div>

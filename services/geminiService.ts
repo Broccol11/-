@@ -13,7 +13,7 @@ const SYSTEM_INSTRUCTION = `
 **任务:**
 1. 使用 Google Search 查找指定日期（Target Date）的A股市场复盘信息（涨跌停对比、连板梯队、成交量、北向/机构/游资流向）。
 2. **重要**: 同时回顾该日期前4个交易日的数据，梳理出近5日的情绪周期走势和热点板块轮动路径。
-3. 研判当时的市场情绪周期（启动、发酵、高潮、分歧、退潮、冰点）。
+3. 研判当时的市场情绪周期（启动、发酵、主升、分歧、退潮、冰点、混沌）。
 4. 制定下一个交易日的交易计划。
 
 **输出格式 (JSON):**
@@ -31,7 +31,13 @@ const SYSTEM_INSTRUCTION = `
     { "name": "板块名", "performance": "涨幅%", "leaderStock": "龙头股", "flowStatus": "流入/流出" }
   ],
   "sentimentTrend": [
-    { "date": "MM-DD", "score": number, "label": "简短描述" } 
+    { 
+      "date": "MM-DD", 
+      "score": number, 
+      "label": "简短描述",
+      "phase": "周期阶段" 
+      // phase 必须是以下之一: "启动", "主升", "高位震荡", "退潮", "低位混沌"
+    } 
     // 必须包含包括Target Date在内的过去5个交易日的数据，按时间升序排列
   ],
   "sectorTrend": [
@@ -55,6 +61,8 @@ const SYSTEM_INSTRUCTION = `
 }
 `;
 
+const MAX_RETRIES = 3;
+
 export const fetchMarketAnalysis = async (targetDate?: string): Promise<MarketAnalysis> => {
   if (!process.env.API_KEY) {
     throw new Error("API Key is missing. Please check your environment variables.");
@@ -70,6 +78,8 @@ export const fetchMarketAnalysis = async (targetDate?: string): Promise<MarketAn
     
     CRITICAL: You MUST also search for and summarize the market sentiment and top hot sectors for the 4 trading days LEADING UP TO ${dateToAnalyze} to build a 5-day trend ending on ${dateToAnalyze}.
     
+    Identify the specific 'Cycle Phase' (phase) for each of the 5 days (e.g., Launch, Rise, Divergence, Decline, Chaos).
+    
     Based on the analysis of ${dateToAnalyze}, generate specific trading plans for the NEXT trading day.
     For the trading plans, be extremely specific about ENTRY triggers and STOP LOSS levels.
     Calculate potential support/resistance levels based on price action found in search results.
@@ -81,28 +91,47 @@ export const fetchMarketAnalysis = async (targetDate?: string): Promise<MarketAn
     
     IMPORTANT: Return ONLY the JSON object. Do not wrap it in markdown code blocks.`;
 
-    const result = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: prompt }]
-        }
-      ],
-      config: {
-        tools: [{ googleSearch: {} }],
-        systemInstruction: SYSTEM_INSTRUCTION,
-      },
-    });
+    let result;
+    let lastError;
 
-    const text = result.text;
+    // Retry loop for robustness against transient network/RPC errors
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        result = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: prompt }]
+            }
+          ],
+          config: {
+            tools: [{ googleSearch: {} }],
+            systemInstruction: SYSTEM_INSTRUCTION,
+          },
+        });
+
+        if (result.text) break; // Success, exit loop
+      } catch (err: any) {
+        console.warn(`Attempt ${attempt} failed:`, err);
+        lastError = err;
+        
+        if (attempt === MAX_RETRIES) break; // Don't wait after last attempt
+        
+        // Exponential backoff: 1s, 2s, 4s...
+        const delay = 1000 * Math.pow(2, attempt - 1);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    const text = result?.text;
     
     if (!text) {
-      throw new Error("No response from AI. The model might be overloaded or search failed.");
+      throw lastError || new Error("No response from AI. The model might be overloaded or search failed.");
     }
 
     // Extract grounding metadata
-    const groundingChunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    const groundingChunks = result?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     const sources = groundingChunks
       .map((chunk: any) => chunk.web ? { title: chunk.web.title, uri: chunk.web.uri } : null)
       .filter((s: any) => s !== null);
@@ -144,8 +173,8 @@ export const fetchMarketAnalysis = async (targetDate?: string): Promise<MarketAn
   } catch (error: any) {
     console.error("Analysis failed:", error);
     // Enhance error message for UI
-    if (error.message && error.message.includes("Rpc failed")) {
-      throw new Error("Connection failed (RPC Error). Please try again in a few seconds.");
+    if (error.message && (error.message.includes("Rpc failed") || error.message.includes("xhr error"))) {
+      throw new Error("Connection unstable (RPC/XHR Error). Retried 3 times but failed. Please try again.");
     }
     throw error;
   }

@@ -20,6 +20,7 @@ export interface SentimentPoint {
   date: string;
   score: number;
   label: string;
+  phase: string; // "启动", "主升", "高位震荡", "退潮", "低位混沌"
 }
 
 export interface SectorPoint {
