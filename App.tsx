@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { fetchMarketAnalysis } from './services/geminiService';
 import { MarketAnalysis } from './types';
 import { AnalysisView } from './components/AnalysisView';
@@ -16,7 +16,7 @@ interface ScrollColumnProps {
 const ScrollColumn: React.FC<ScrollColumnProps> = ({ options, selected, onSelect, label }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Scroll to selected item on mount/update
+  // Scroll to selected item on mount or when selection/options change
   useEffect(() => {
     if (containerRef.current) {
       const selectedIndex = options.indexOf(selected);
@@ -25,7 +25,7 @@ const ScrollColumn: React.FC<ScrollColumnProps> = ({ options, selected, onSelect
         containerRef.current.scrollTop = selectedIndex * itemHeight;
       }
     }
-  }, []); // Run once on mount mostly, can add dependencies if needed for auto-scroll
+  }, [selected, options]);
 
   return (
     <div className="flex flex-col items-center">
@@ -68,21 +68,35 @@ const DateWheelPicker: React.FC<{
   const years = Array.from({ length: 3 }, (_, i) => currentYear - 2 + i); 
   const months = Array.from({ length: 12 }, (_, i) => i + 1);
   
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+  // Calculate valid trading days (excluding weekends)
+  const validDays = useMemo(() => {
+    const daysInMonth = new Date(year, month, 0).getDate();
+    return Array.from({ length: daysInMonth }, (_, i) => i + 1).filter(d => {
+        const date = new Date(year, month - 1, d);
+        const dayOfWeek = date.getDay();
+        return dayOfWeek !== 0 && dayOfWeek !== 6; // 0 is Sunday, 6 is Saturday
+    });
+  }, [year, month]);
 
-  // Ensure day is valid when month changes
+  // Ensure day is valid when month/year changes
   useEffect(() => {
-    if (day > daysInMonth) {
-      setDay(daysInMonth);
+    if (validDays.length > 0 && !validDays.includes(day)) {
+      // Find the closest valid day to the previously selected day
+      const closest = validDays.reduce((prev, curr) => {
+        return (Math.abs(curr - day) < Math.abs(prev - day) ? curr : prev);
+      }, validDays[0]); // Default to first valid day if reduce fails
+      setDay(closest);
     }
-  }, [month, year, daysInMonth, day, setDay]);
+  }, [validDays, day, setDay]);
 
   return (
-    <div className="flex gap-4 justify-center bg-slate-900/50 p-4 rounded-xl border border-slate-800 backdrop-blur-sm">
-      <ScrollColumn options={years} selected={year} onSelect={setYear} label="年 (Year)" />
-      <ScrollColumn options={months} selected={month} onSelect={setMonth} label="月 (Month)" />
-      <ScrollColumn options={days} selected={day} onSelect={setDay} label="日 (Day)" />
+    <div className="flex flex-col items-center gap-2">
+      <div className="flex gap-4 justify-center bg-slate-900/50 p-4 rounded-xl border border-slate-800 backdrop-blur-sm">
+        <ScrollColumn options={years} selected={year} onSelect={setYear} label="年 (Year)" />
+        <ScrollColumn options={months} selected={month} onSelect={setMonth} label="月 (Month)" />
+        <ScrollColumn options={validDays} selected={day} onSelect={setDay} label="日 (Day)" />
+      </div>
+      <span className="text-[10px] text-slate-600 font-mono">* 已自动过滤周末休市日</span>
     </div>
   );
 };
