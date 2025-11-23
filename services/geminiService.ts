@@ -61,10 +61,8 @@ export const fetchMarketAnalysis = async (): Promise<MarketAnalysis> => {
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  try {
-    const currentDate = new Date().toISOString().split('T')[0];
-    const prompt = `Search for A-Share market summary for today (${currentDate}). 
+  const currentDate = new Date().toISOString().split('T')[0];
+  const prompt = `Search for A-Share market summary for today (${currentDate}). 
     Key data points needed: Limit Up/Down counts, Total Volume, Northbound/Main fund flow, Hot concepts.
     
     CRITICAL: You MUST also search for and summarize the market sentiment and top hot sectors for the PREVIOUS 4 trading days to build a 5-day trend.
@@ -79,72 +77,102 @@ export const fetchMarketAnalysis = async (): Promise<MarketAnalysis> => {
     
     IMPORTANT: Return ONLY the JSON object. Do not wrap it in markdown code blocks.`;
 
-    const result = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: prompt }]
-        }
-      ],
-      config: {
-        tools: [{ googleSearch: {} }],
-        systemInstruction: SYSTEM_INSTRUCTION,
-      },
-    });
+  let lastError: any;
+  const maxRetries = 3;
 
-    const text = result.text;
-    
-    if (!text) {
-      throw new Error("No response from AI. The model might be overloaded or search failed.");
-    }
-
-    // Extract grounding metadata
-    const groundingChunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-    const sources = groundingChunks
-      .map((chunk: any) => chunk.web ? { title: chunk.web.title, uri: chunk.web.uri } : null)
-      .filter((s: any) => s !== null);
-
-    let parsedData: any;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-        parsedData = JSON.parse(text);
-    } catch (e) {
-        // Fallback cleanup if the model adds markdown code blocks or intro text
-        let cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        
-        // Find JSON object boundaries if there is extra text
-        const firstBrace = cleanText.indexOf('{');
-        const lastBrace = cleanText.lastIndexOf('}');
-        
-        if (firstBrace !== -1 && lastBrace !== -1) {
-            cleanText = cleanText.substring(firstBrace, lastBrace + 1);
-        }
+      const result = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: prompt }]
+          }
+        ],
+        config: {
+          tools: [{ googleSearch: {} }],
+          systemInstruction: SYSTEM_INSTRUCTION,
+        },
+      });
 
-        try {
-            parsedData = JSON.parse(cleanText);
-        } catch (e2) {
-             console.error("Failed to parse JSON:", text);
-             throw new Error("Failed to parse market analysis data. The model response was not valid JSON.");
-        }
+      const text = result.text;
+      
+      if (!text) {
+        throw new Error("No response from AI. The model might be overloaded or search failed.");
+      }
+
+      // Extract grounding metadata
+      const groundingChunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      const sources = groundingChunks
+        .map((chunk: any) => chunk.web ? { title: chunk.web.title, uri: chunk.web.uri } : null)
+        .filter((s: any) => s !== null);
+
+      let parsedData: any;
+      try {
+          parsedData = JSON.parse(text);
+      } catch (e) {
+          // Fallback cleanup if the model adds markdown code blocks or intro text
+          let cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+          
+          // Find JSON object boundaries if there is extra text
+          const firstBrace = cleanText.indexOf('{');
+          const lastBrace = cleanText.lastIndexOf('}');
+          
+          if (firstBrace !== -1 && lastBrace !== -1) {
+              cleanText = cleanText.substring(firstBrace, lastBrace + 1);
+          }
+
+          try {
+              parsedData = JSON.parse(cleanText);
+          } catch (e2) {
+               console.error("Failed to parse JSON:", text);
+               throw new Error("Failed to parse market analysis data. The model response was not valid JSON.");
+          }
+      }
+
+      // Validate essential fields to prevent UI crashes
+      if (!parsedData.hotSectors) parsedData.hotSectors = [];
+      if (!parsedData.tradingPlans) parsedData.tradingPlans = [];
+      if (!parsedData.sentimentTrend) parsedData.sentimentTrend = [];
+      if (!parsedData.sectorTrend) parsedData.sectorTrend = [];
+
+      return {
+        ...parsedData,
+        sources: sources
+      };
+
+    } catch (error: any) {
+      console.warn(`Attempt ${attempt} failed:`, error);
+      lastError = error;
+
+      // Check if error is worth retrying (Network, 500s, RPC errors)
+      const errorMsg = error.toString();
+      const isRetriable = 
+        errorMsg.includes("Rpc failed") || 
+        errorMsg.includes("500") || 
+        errorMsg.includes("503") || 
+        errorMsg.includes("fetch failed") ||
+        error.status === 500 ||
+        error.status === 503;
+
+      if (attempt < maxRetries && isRetriable) {
+        // Exponential backoff: 1s, 2s...
+        await new Promise(resolve => setTimeout(resolve, attempt * 1500));
+        continue;
+      }
+      
+      // If final attempt or non-retriable, formatting the error for UI
+      let friendlyMessage = error.message || "Unknown error";
+      if (friendlyMessage.includes("Rpc failed")) {
+         friendlyMessage = "网络连接中断 (Google API RPC Error). 请尝试刷新页面或检查网络。";
+      } else if (friendlyMessage.includes("500") || friendlyMessage.includes("503")) {
+         friendlyMessage = "AI 服务暂时繁忙 (Server Error). 正在重试，请稍候。";
+      }
+      
+      throw new Error(friendlyMessage);
     }
-
-    // Validate essential fields to prevent UI crashes
-    if (!parsedData.hotSectors) parsedData.hotSectors = [];
-    if (!parsedData.tradingPlans) parsedData.tradingPlans = [];
-    if (!parsedData.sentimentTrend) parsedData.sentimentTrend = [];
-    if (!parsedData.sectorTrend) parsedData.sectorTrend = [];
-
-    return {
-      ...parsedData,
-      sources: sources
-    };
-
-  } catch (error: any) {
-    console.error("Analysis failed:", error);
-    // Enhance error message for UI
-    if (error.message && error.message.includes("Rpc failed")) {
-      throw new Error("Connection failed (RPC Error). Please try again in a few seconds.");
-    }
-    throw error;
   }
+
+  throw lastError;
 };
